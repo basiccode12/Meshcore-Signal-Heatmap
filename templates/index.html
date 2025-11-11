@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Meshcore Signal Heatmap</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-sA+4J9qP0fM7zyP+XLlZ5JWBFEL7Ao8I4yP8g9TR9Zk=" crossorigin="anonymous" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o9N1j8Mkf25n2zato3trENcGukdxbYlR4G4szrF6Eqk=" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+    <style>
+        body { margin: 0; padding: 0; }
+        header { padding: 1rem 2rem 0.5rem 2rem; }
+        nav { padding: 0 2rem 1rem 2rem; }
+        nav ul { list-style: none; display: flex; gap: 1rem; padding: 0; margin: 0; flex-wrap: wrap; }
+        nav a { text-decoration: none; color: #3b50ce; font-weight: 600; }
+        nav a:hover { text-decoration: underline; }
+        main { padding: 0 2rem 2rem; }
+        #map { width: 100%; height: 70vh; border-radius: 0.75rem; box-shadow: 0 12px 40px rgba(0,0,0,0.12); }
+        .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; align-items: end; }
+        .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+        .stat-card { padding: 0.75rem 1rem; border-radius: 0.75rem; background: #f2f5ff; flex: 1 1 200px; }
+        .stat-card strong { display: block; font-size: 0.9rem; color: #3b50ce; }
+        .empty-state { padding: 2rem; text-align: center; color: #6c7a89; }
+        form label { font-weight: 600; }
+        #message { margin-top: 1rem; color: #ff6a3d; }
+        .note { margin-bottom: 1.5rem; color: #6c7a89; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Meshcore Signal Heatmap</h1>
+        <p>Monitor Meshcore ping telemetry, compare antennas, and explore coverage from your development workstation.</p>
+    </header>
+    <nav>
+        <ul>
+            <li><a href="/">Filtered Heatmap</a></li>
+            <li><a href="/heatmap/full">Full Dataset Heatmap</a></li>
+            <li><a href="/ingest">Device Ingestion Console</a></li>
+        </ul>
+    </nav>
+    <main>
+        {% if not filters_enabled %}
+        <p class="note">
+            Viewing <strong>all collected ping samples</strong>. Use the filtered dashboard for antenna comparisons or time slicing.
+        </p>
+        {% endif %}
+        <section class="controls">
+            <label>
+                Metric
+                <select id="metric">
+                    <option value="rssi_dbm">RSSI (dBm)</option>
+                    <option value="snr_db">SNR (dB)</option>
+                    <option value="round_trip_ms">Round Trip (ms)</option>
+                </select>
+            </label>
+            {% if filters_enabled %}
+            <label>
+                Time Window (hours)
+                <input id="hours" type="number" min="1" max="168" placeholder="All data" />
+            </label>
+            <label>
+                Hardware Model
+                <input id="hardware" type="text" placeholder="e.g. Heltec-V3" />
+            </label>
+            <label>
+                Antenna Model
+                <input id="antenna" type="text" placeholder="e.g. Laird-5dBi" />
+            </label>
+            {% endif %}
+            <button id="refresh" class="contrast">Refresh Heatmap</button>
+        </section>
+
+        <div id="message"></div>
+        <div id="map"></div>
+        <div class="stats" id="stats"></div>
+    </main>
+
+    <script>
+        const mapTileUrl = "{{ map_tile_url }}";
+        const filtersEnabled = {{ "true" if filters_enabled else "false" }};
+        const autoRefreshMs = {{ auto_refresh_ms }};
+
+        const map = L.map('map');
+        let heatLayer;
+        let markersLayer = L.layerGroup().addTo(map);
+
+        function applyBaseLayer() {
+            const url = mapTileUrl || "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+            L.tileLayer(url, {
+                maxZoom: 20,
+                attribution: mapTileUrl ? "Custom tiles" : "&copy; OpenStreetMap contributors"
+            }).addTo(map);
+        }
+
+        applyBaseLayer();
+        map.setView([37.7749, -122.4194], 11); // fallback center (e.g., San Francisco)
+
+        async function fetchHeatmap() {
+            const metric = document.getElementById('metric').value;
+
+            const params = new URLSearchParams({ metric });
+
+            const hoursEl = document.getElementById('hours');
+            const hardwareEl = document.getElementById('hardware');
+            const antennaEl = document.getElementById('antenna');
+
+            if (hoursEl && hoursEl.value) params.set('hours', hoursEl.value);
+            if (hardwareEl && hardwareEl.value) params.set('hardware_model', hardwareEl.value);
+            if (antennaEl && antennaEl.value) params.set('antenna_model', antennaEl.value);
+
+            const response = await fetch(`/heatmap?${params.toString()}`);
+            if (!response.ok) {
+                throw new Error(`Request failed (${response.status})`);
+            }
+            return response.json();
+        }
+
+        function normalizeIntensity(value, minValue, maxValue) {
+            if (minValue === null || maxValue === null || minValue === maxValue) {
+                return 0.6;
+            }
+            return (value - minValue) / (maxValue - minValue);
+        }
+
+        function updateStats(data) {
+            const container = document.getElementById('stats');
+            container.innerHTML = "";
+            if (!data.points.length) {
+                return;
+            }
+
+            const cards = [
+                { label: "Samples", value: data.points.reduce((acc, p) => acc + p.samples, 0) },
+                { label: "Metric Range", value: `${data.min_value?.toFixed(1)} → ${data.max_value?.toFixed(1)}` },
+                { label: "Points", value: data.points.length }
+            ];
+
+            for (const { label, value } of cards) {
+                const div = document.createElement('div');
+                div.className = "stat-card";
+                div.innerHTML = `<strong>${label}</strong>${value ?? "—"}`;
+                container.appendChild(div);
+            }
+        }
+
+        function showMessage(text, isError = false) {
+            const el = document.getElementById('message');
+            el.textContent = text;
+            el.style.color = isError ? '#ff6a3d' : '#6c7a89';
+        }
+
+        function clearLayers() {
+            if (heatLayer) {
+                map.removeLayer(heatLayer);
+                heatLayer = null;
+            }
+            markersLayer.clearLayers();
+        }
+
+        function renderHeatmap(data) {
+            const { points, min_value, max_value } = data;
+            if (!points.length) {
+                clearLayers();
+                showMessage("No samples available for the selected filters.");
+                return;
+            }
+
+            const heatData = points.map(point => {
+                const intensity = normalizeIntensity(point.intensity, min_value, max_value);
+                return [point.latitude, point.longitude, intensity];
+            });
+
+            clearLayers();
+            heatLayer = L.heatLayer(heatData, {
+                minOpacity: {{ heatmap_min_opacity }},
+                radius: {{ heatmap_radius }},
+                blur: {{ heatmap_blur }},
+                maxZoom: {{ heatmap_max_zoom }}
+            }).addTo(map);
+
+            const tooltipMetric = document.getElementById('metric').selectedOptions[0].textContent;
+
+            points.forEach(point => {
+                const marker = L.circleMarker([point.latitude, point.longitude], {
+                    radius: 6,
+                    color: '#ffffff',
+                    weight: 1,
+                    fillColor: '#3b50ce',
+                    fillOpacity: 0.6
+                });
+
+                const details = [
+                    `<strong>${tooltipMetric}:</strong> ${point.intensity.toFixed(1)}`,
+                    `<strong>Samples:</strong> ${point.samples}`,
+                    point.antenna_gain_dbi !== null ? `<strong>Antenna Gain:</strong> ${point.antenna_gain_dbi.toFixed(1)} dBi` : null,
+                    point.tx_power_dbm !== null ? `<strong>TX Power:</strong> ${point.tx_power_dbm.toFixed(1)} dBm` : null,
+                    point.hardware_model ? `<strong>Hardware:</strong> ${point.hardware_model}` : null,
+                    point.latest_seen ? `<strong>Last Seen:</strong> ${new Date(point.latest_seen).toLocaleString()}` : null
+                ].filter(Boolean).join("<br/>");
+
+                marker.bindPopup(details);
+                marker.addTo(markersLayer);
+            });
+
+            const avgLat = points.reduce((acc, p) => acc + p.latitude, 0) / points.length;
+            const avgLon = points.reduce((acc, p) => acc + p.longitude, 0) / points.length;
+            map.setView([avgLat, avgLon], map.getZoom());
+            showMessage(`Loaded ${points.length} heatmap point(s).`);
+            updateStats(data);
+        }
+
+        async function refreshHeatmap() {
+            showMessage("Loading heatmap…");
+            try {
+                const data = await fetchHeatmap();
+                renderHeatmap(data);
+            } catch (error) {
+                console.error(error);
+                showMessage(error.message, true);
+                clearLayers();
+                updateStats({ points: [] });
+            }
+        }
+
+        document.getElementById('refresh').addEventListener('click', (event) => {
+            event.preventDefault();
+            refreshHeatmap();
+        });
+
+        document.getElementById('metric').value = "rssi_dbm";
+
+        refreshHeatmap();
+        if (autoRefreshMs > 0) {
+            setInterval(refreshHeatmap, autoRefreshMs);
+        }
+    </script>
+</body>
+</html>
+
+

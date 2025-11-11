@@ -1,44 +1,131 @@
-# Meshcore-Signal-Heatmap
+# Meshcore Signal Heatmap
 
-**Goal**  
-Add a new map layer to the Meshcore app that shows where the network signal is strong or weak. The layer looks like a heatmap (warm colors = strong signal, cool colors = weak signal).
+Prototype toolkit for collecting Meshcore ping telemetry, storing it in a shared SQLite database, and exploring coverage through an interactive web interface. It includes:
 
-**The proposal (for now)**
+- Serial ingestion console that streams ping data from a USB-connected Meshcore companion node directly into the database.
+- Browser-based dashboards for visualizing filtered or full network heatmaps.
+- REST APIs and CLI helpers for automation, data export, and integration.
 
-- Devices in the Meshcore network send short “ping” messages to each other. Each reply includes how strong the signal is.
-- Whenever a device sends or receives a ping, it notes:
-  - How strong and clear the signal was
-  - Which device it came from and went to
-  - When and where it happened
-  - What gear was used (radio model, antenna type, power setting)
-- These notes are stored on the device until they can be shared. Later, they sync to a main node or server that collects everyone’s data.
-- The server blends all the points together to make a smooth heatmap for the map view. You can filter by time, device type, or antenna to compare setups.
+## Features
 
-**In the Meshcore app (meshcore app developers to take responsibility for this)**
+- **Ping Telemetry Capture**: Record RSSI, SNR, round-trip time, antenna details, device metadata, and location.
+- **SQLite Storage**: Shared development database checked into the repository under `data/meshcore_heatmap_dev.db`.
+- **REST API**: Lightweight FastAPI service for ingesting telemetry and serving aggregated heatmap tiles.
+- **Heatmap Generation**: Utilities to produce GeoJSON/HTML heatmap overlays from stored samples.
 
-- A new toggle in the map view turns the heatmap on or off.
-- You can adjust how see-through it is and which signal measurement you want to look at.
-- You can filter the map to focus on certain antennas, radios, or time ranges.
-- Tapping an area can show more details, like average signal strength or recent pings.
-- You can export the data if you want to run your own analysis.
+## Getting Started
 
-**Why it helps**
+### Prerequisites
 
-- See coverage gaps quickly—handy for planning new nodes or moving gear.
-- Compare antennas or mounting styles to find out what works best.
-- Fix problems faster by spotting weak links in the network.
-- Share clear visuals with team members or partners.
+- Python 3.10 or newer
+- `pip` (or `uv`/`pipx`) for dependency installation
 
-**Practical safeguards**
+### Installation
 
-- Pings are spaced out so they don’t overload the network.
-- Devices skip data collection if their battery is low or if the network is already busy.
-- Collected info follows the same privacy rules Meshcore already uses; devices can opt out.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-**What to build**
+### Development Database
 
-1. Add ping-logging that remembers signal strength plus device/antenna details.
-2. Add a sync process so devices upload their data when they can.
-3. Create a service that turns the collected data into heatmap tiles.
-4. Update the app to show the heatmap and let users control it.
-5. Write setup and user guides explaining how the new feature works and how to interpret it.
+- `data/meshcore_heatmap_dev.db` is committed to the repo for team sharing.
+- Treat it as disposable development data only—do **not** store production information here.
+- If you prefer a local-only copy, duplicate the file and point the `DATABASE_URL` environment variable at your copy.
+
+#### Alternative Shared DB
+
+If storing SQLite in Git is inconvenient, point `DATABASE_URL` at a network path, or use a lightweight managed instance such as:
+
+- [liteFS](https://fly.io/docs/litefs/) or [libSQL/Turso](https://turso.tech/) for a serverless SQLite-compatible backend
+- A shared PostgreSQL container (e.g., via Docker Compose) by swapping the SQLAlchemy URI in `settings.py`
+
+### Running the API
+
+```bash
+source .venv/bin/activate
+uvicorn meshcore_heatmap.api:app --reload
+```
+
+API docs will be available at `http://127.0.0.1:8000/docs`.
+
+### Web Dashboard
+
+Launch the FastAPI server (see above), then open:
+
+- `http://127.0.0.1:8000/` — **Filtered Heatmap**: choose metrics, time windows, and antenna/hardware filters to explore slices of the data.
+- `http://127.0.0.1:8000/heatmap/full` — **Full Dataset Heatmap**: view every recorded sample, ideal for overall coverage checks.
+- `http://127.0.0.1:8000/ingest` — **Device Ingestion Console**: connects to a USB Meshcore node using Web Serial, auto-fills device metadata when available, and lets you edit antenna/device details before capturing pings.
+
+> **Web Serial requirement:** use a Chromium-based browser (Chrome, Edge, Brave). Localhost (`http://127.0.0.1`) counts as a secure origin, so HTTPS is not required for local testing.
+
+### Ingesting Sample Data
+
+```bash
+python -m meshcore_heatmap.cli ingest-sample data/sample_pings.json
+```
+
+### Generating a Heatmap
+
+```bash
+python -m meshcore_heatmap.cli export-heatmap --output build/heatmap.html
+```
+
+Open the resulting HTML in a browser to view the overlay.
+
+## Project Structure
+
+```
+meshcore_heatmap/
+├── api.py              # FastAPI routes
+├── cli.py              # Command-line utilities
+├── db.py               # Database models and helpers
+├── heatmap.py          # Heatmap rendering utilities
+├── models.py           # Pydantic schemas
+├── settings.py         # Environment/config management
+└── __init__.py
+data/
+└── meshcore_heatmap_dev.db
+```
+
+## Environment Configuration
+
+Override defaults using environment variables:
+
+- `DATABASE_URL` – SQLAlchemy connection string (default: `sqlite:///data/meshcore_heatmap_dev.db`)
+- `MAP_TILE_URL` – Custom base map tiles for heatmap rendering
+
+Use a `.env` file for local settings (automatically loaded by `python-dotenv` if present).
+
+## Testing
+
+```bash
+pytest
+```
+
+## Original Concept (Background)
+
+The initial proposal for Meshcore signal heatmaps focused on device-initiated pings and deep app integration. For future reference, the original plan emphasized:
+
+- Devices exchange short “ping” messages, recording signal clarity, endpoints, time, location, and attached gear.
+- Data synchronizes to a central node/server once connectivity is available, where it’s blended into heatmap tiles with filtering by time, device, or antenna.
+- The Meshcore app adds a toggleable heatmap layer with adjustable opacity, metric selection, and detailed popups—plus export options for further analysis.
+- Operational safeguards such as spaced pings, battery-aware sampling, and opt-out privacy controls prevent network overload and respect user consent.
+- Implementation steps: telemetry logging, sync pipeline, heatmap service, app UI work, and user-facing documentation.
+
+These ideas remain compatible with the current toolkit and can guide the next phase of Meshcore app integration.
+
+## Next Steps
+
+- Integrate real Meshcore ping ingestion
+- Adjust the Web Serial parser to match your firmware’s exact telemetry format
+- Add authentication/authorization
+- Hook into the Meshcore app UI for overlay rendering
+- Extend CLI for field calibration workflows
+
+## License
+
+MIT
+
+

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Meshcore Ping Ingestion Console</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+    <style>
+        body { margin: 0; padding: 0; }
+        header { padding: 1rem 2rem 0.5rem 2rem; }
+        nav { padding: 0 2rem 1rem 2rem; }
+        nav ul { list-style: none; display: flex; gap: 1rem; padding: 0; margin: 0; flex-wrap: wrap; }
+        nav a { text-decoration: none; color: #3b50ce; font-weight: 600; }
+        nav a:hover { text-decoration: underline; }
+        main { padding: 0 2rem 2.5rem; }
+        .panel { background: #ffffff; border-radius: 0.75rem; padding: 1.5rem; box-shadow: 0 8px 28px rgba(0,0,0,0.08); margin-bottom: 2rem; }
+        .panel h2 { margin-top: 0; }
+        #status { margin-top: 0.5rem; color: #3b50ce; }
+        #status.error { color: #ff6a3d; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.5rem; border-bottom: 1px solid #e3e8f5; font-size: 0.9rem; }
+        tbody tr:hover { background: #f5f7ff; }
+        code { font-size: 0.85rem; }
+        .log { max-height: 220px; overflow-y: auto; border: 1px solid #e3e8f5; border-radius: 0.75rem; }
+        .note { color: #6c7a89; margin-top: 0.75rem; }
+        .actions { display: flex; gap: 1rem; flex-wrap: wrap; }
+        .meta-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Meshcore Ping Ingestion Console</h1>
+        <p>Connect a Meshcore companion radio via USB, capture ping telemetry with Web Serial, and push it straight into the shared database.</p>
+    </header>
+    <nav>
+        <ul>
+            <li><a href="/">Filtered Heatmap</a></li>
+            <li><a href="/heatmap/full">Full Dataset Heatmap</a></li>
+            <li><a href="/ingest">Device Ingestion Console</a></li>
+        </ul>
+    </nav>
+    <main>
+        <section class="panel">
+            <h2>1. Connect Your Device</h2>
+            <p>
+                Ensure your Meshcore node is flashed with the companion firmware and connected over USB. The browser will request permission to talk to the serial port.
+            </p>
+            <div class="actions">
+                <button id="connect" class="contrast">Connect Meshcore Device</button>
+                <button id="disconnect" class="secondary" disabled>Disconnect</button>
+                <label>
+                    Baud Rate
+                    <input id="baudrate" type="number" value="115200" min="300" step="300" />
+                </label>
+            </div>
+            <p id="status">Waiting for device connection…</p>
+            <p class="note">
+                Web Serial is supported in Chromium-based browsers (Chrome, Edge, Brave) over HTTPS or <code>http://127.0.0.1</code>.
+            </p>
+        </section>
+
+        <section class="panel">
+            <h2>2. Device &amp; Antenna Defaults</h2>
+            <p>
+                We’ll auto-fill any metadata broadcast by the device. Update the fields below to override or complete the profile before logging pings; changes apply immediately to all incoming samples.
+            </p>
+            <div class="meta-form">
+                <label>
+                    Hardware Model
+                    <input id="default-hardware-model" type="text" placeholder="e.g. Heltec-V3" />
+                </label>
+                <label>
+                    Firmware Version
+                    <input id="default-firmware-version" type="text" placeholder="e.g. 1.2.3" />
+                </label>
+                <label>
+                    Antenna Model
+                    <input id="default-antenna-model" type="text" placeholder="e.g. Laird-5dBi" />
+                </label>
+                <label>
+                    Antenna Gain (dBi)
+                    <input id="default-antenna-gain" type="number" step="0.1" placeholder="e.g. 5.0" />
+                </label>
+                <label>
+                    Antenna Polarization
+                    <input id="default-antenna-polarization" type="text" placeholder="e.g. vertical" />
+                </label>
+                <label>
+                    TX Power (dBm)
+                    <input id="default-tx-power" type="number" step="0.1" placeholder="e.g. 20" />
+                </label>
+                <label>
+                    Frequency (MHz)
+                    <input id="default-frequency" type="number" step="0.1" placeholder="e.g. 915" />
+                </label>
+                <label>
+                    Channel ID
+                    <input id="default-channel-id" type="text" placeholder="e.g. public" />
+                </label>
+                <label>
+                    Region
+                    <input id="default-region" type="text" placeholder="e.g. NA" />
+                </label>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>3. Live Ping Stream</h2>
+            <p>
+                Incoming lines are expected to be JSON objects matching the <code>PingSampleIn</code> schema. Missing timestamps will be filled with the current time.
+            </p>
+            <div class="log">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Origin ➜ Target</th>
+                            <th>RSSI</th>
+                            <th>SNR</th>
+                            <th>Round Trip</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="live-log">
+                        <tr><td colspan="6">No samples yet. Connect a device to begin streaming.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>4. Recent Samples in Database</h2>
+            <p class="note">This table refreshes automatically; use it to confirm that ingested pings land in the shared SQLite database.</p>
+            <div class="log">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Origin ➜ Target</th>
+                            <th>RSSI</th>
+                            <th>SNR</th>
+                            <th>Round Trip</th>
+                            <th>Antenna</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-table">
+                        <tr><td colspan="6">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const connectButton = document.getElementById('connect');
+        const disconnectButton = document.getElementById('disconnect');
+        const statusDisplay = document.getElementById('status');
+        const logBody = document.getElementById('live-log');
+        const recentBody = document.getElementById('recent-table');
+        const baudRateInput = document.getElementById('baudrate');
+        const defaultFieldConfig = {
+            hardware_model: { input: document.getElementById('default-hardware-model'), numeric: false },
+            firmware_version: { input: document.getElementById('default-firmware-version'), numeric: false },
+            antenna_model: { input: document.getElementById('default-antenna-model'), numeric: false },
+            antenna_gain_dbi: { input: document.getElementById('default-antenna-gain'), numeric: true },
+            antenna_polarization: { input: document.getElementById('default-antenna-polarization'), numeric: false },
+            tx_power_dbm: { input: document.getElementById('default-tx-power'), numeric: true },
+            frequency_mhz: { input: document.getElementById('default-frequency'), numeric: true },
+            channel_id: { input: document.getElementById('default-channel-id'), numeric: false },
+            region: { input: document.getElementById('default-region'), numeric: false },
+        };
+
+        let port;
+        let reader;
+        let keepReading = false;
+        let buffer = "";
+
+        function setStatus(message, isError = false) {
+            statusDisplay.textContent = message;
+            statusDisplay.classList.toggle('error', isError);
+        }
+
+        function appendLog(sample, state = "Queued") {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${sample.timestamp ?? new Date().toISOString()}</td>
+                <td>${sample.origin_node_id || "?"} ➜ ${sample.target_node_id || "?"}</td>
+                <td>${formatNumber(sample.rssi_dbm, "dBm")}</td>
+                <td>${formatNumber(sample.snr_db, "dB")}</td>
+                <td>${formatNumber(sample.round_trip_ms, "ms")}</td>
+                <td>${state}</td>
+            `;
+            if (logBody.children.length === 1 && logBody.children[0].textContent.includes("No samples")) {
+                logBody.innerHTML = "";
+            }
+            logBody.prepend(row);
+            while (logBody.children.length > 100) {
+                logBody.removeChild(logBody.lastChild);
+            }
+            return row;
+        }
+
+        function formatNumber(value, suffix) {
+            if (value === null || value === undefined) return "—";
+            return `${Number(value).toFixed(1)} ${suffix}`;
+        }
+
+        function readDefaults() {
+            const defaults = {};
+            for (const [field, config] of Object.entries(defaultFieldConfig)) {
+                if (!config.input) continue;
+                const raw = config.input.value.trim();
+                if (!raw.length) continue;
+                defaults[field] = config.numeric ? Number(raw) : raw;
+            }
+            return defaults;
+        }
+
+        function populateDefaultsFromSample(sample) {
+            for (const [field, config] of Object.entries(defaultFieldConfig)) {
+                if (!config.input) continue;
+                if (config.input.value.trim().length) continue;
+                const value = sample[field];
+                if (value === undefined || value === null || value === "") continue;
+                config.input.value = value;
+            }
+        }
+
+        function applyDefaultsToSample(sample) {
+            const enriched = { ...sample };
+            const defaults = readDefaults();
+            for (const [field, value] of Object.entries(defaults)) {
+                if (
+                    enriched[field] === undefined ||
+                    enriched[field] === null ||
+                    enriched[field] === ""
+                ) {
+                    enriched[field] = value;
+                }
+            }
+            return enriched;
+        }
+
+        async function handleSample(sample) {
+            if (!sample.origin_node_id || !sample.target_node_id) {
+                console.warn("Skipping sample without origin/target", sample);
+                return;
+            }
+            if (!sample.timestamp) {
+                sample.timestamp = new Date().toISOString();
+            }
+            const row = appendLog(sample, "Sending…");
+            try {
+                const response = await fetch("/ping-samples", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(sample),
+                });
+                if (!response.ok) {
+                    const text = await response.text();
+                    row.cells[5].textContent = `Error ${response.status}`;
+                    console.error("Failed to store sample", text);
+                } else {
+                    row.cells[5].textContent = "Stored";
+                    refreshRecent();
+                }
+            } catch (error) {
+                row.cells[5].textContent = "Network error";
+                console.error("Network error", error);
+            }
+        }
+
+        async function readLoop() {
+            while (keepReading && reader) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    break;
+                }
+                buffer += value;
+                const lines = buffer.split(/\r?\n/);
+                buffer = lines.pop() ?? "";
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+                    try {
+                        const sample = JSON.parse(trimmed);
+                        populateDefaultsFromSample(sample);
+                        const enriched = applyDefaultsToSample(sample);
+                        handleSample(enriched);
+                    } catch (error) {
+                        console.error("Failed to parse line", trimmed, error);
+                        appendLog(
+                            { origin_node_id: "?", target_node_id: "?", timestamp: new Date().toISOString() },
+                            "Parse error"
+                        );
+                    }
+                }
+            }
+        }
+
+        async function connectSerial() {
+            if (!("serial" in navigator)) {
+                setStatus("Web Serial API not supported in this browser.", true);
+                return;
+            }
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: Number(baudRateInput.value) || 115200 });
+                const decoder = new TextDecoderStream();
+                const inputDone = port.readable.pipeTo(decoder.writable);
+                reader = decoder.readable.getReader();
+                keepReading = true;
+                setStatus("Connected. Streaming ping telemetry…");
+                connectButton.disabled = true;
+                disconnectButton.disabled = false;
+                readLoop().finally(() => {
+                    decoder.readable.cancel();
+                    inputDone.catch(() => {});
+                });
+            } catch (error) {
+                console.error(error);
+                setStatus(`Unable to open serial port: ${error.message || error}`, true);
+            }
+        }
+
+        async function disconnectSerial() {
+            keepReading = false;
+            if (reader) {
+                await reader.cancel().catch(() => {});
+                reader.releaseLock();
+                reader = null;
+            }
+            if (port) {
+                await port.close().catch(() => {});
+                port = null;
+            }
+            connectButton.disabled = false;
+            disconnectButton.disabled = true;
+            setStatus("Disconnected.");
+        }
+
+        connectButton.addEventListener('click', () => connectSerial());
+        disconnectButton.addEventListener('click', () => disconnectSerial());
+
+        async function refreshRecent() {
+            try {
+                const response = await fetch("/ping-samples/recent?limit=50");
+                if (!response.ok) throw new Error(`Request failed ${response.status}`);
+                const samples = await response.json();
+                renderRecent(samples);
+            } catch (error) {
+                console.error("Unable to load recent samples", error);
+            }
+        }
+
+        function renderRecent(samples) {
+            if (!samples.length) {
+                recentBody.innerHTML = "<tr><td colspan='6'>No ping samples recorded yet.</td></tr>";
+                return;
+            }
+            recentBody.innerHTML = "";
+            for (const sample of samples) {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${sample.created_at}</td>
+                    <td>${sample.origin_node_id} ➜ ${sample.target_node_id}</td>
+                    <td>${formatNumber(sample.rssi_dbm, "dBm")}</td>
+                    <td>${formatNumber(sample.snr_db, "dB")}</td>
+                    <td>${formatNumber(sample.round_trip_ms, "ms")}</td>
+                    <td>${sample.antenna_model ?? "—"}</td>
+                `;
+                recentBody.appendChild(row);
+            }
+        }
+
+        refreshRecent();
+        setInterval(refreshRecent, 15000);
+    </script>
+</body>
+</html>
+
+
