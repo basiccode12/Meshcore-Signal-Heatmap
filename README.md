@@ -1,5 +1,4 @@
 # Meshcore-Signal-Heatmap
-### Meshcore Signal Heatmap – Plain-Language Description
 
 **Goal**  
 Add a new map layer to the Meshcore app that shows where the network signal is strong or weak. The layer looks like a heatmap (warm colors = strong signal, cool colors = weak signal).
